@@ -4,13 +4,18 @@ import { OCRBlock, BlockType } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
-const SYSTEM_INSTRUCTION = `You are OmniLex, a high-speed Layout-Aware OCR Engine.
-Detect language automatically (specializing in Nepali, Hindi, English).
-Extract structure: headers, paragraphs, and tables.
-For tables, provide row/col mapping in 'tableData'.
-Output: JSON array of blocks.
-Devanagari: Ensure one space before full stop (।).
-Be fast and precise.`;
+const SYSTEM_INSTRUCTION = `You are OmniLex, a high-speed Layout-Aware OCR and Document Intelligence Engine.
+Goal: Transform the provided image into a structured JSON representation that mirrors the original document's physical layout.
+
+Capabilities:
+1. Detect and transcribe text in English, Nepali (Devanagari), and Hindi.
+2. Identify document structure: 'header', 'paragraph', 'table', 'list', and 'image_placeholder'.
+3. For 'table', reconstruct the grid perfectly in 'tableData'.
+4. For 'image_placeholder', detect any photos, charts, or logos and provide their exact boundaries.
+5. Devanagari specific: Ensure one space before full stop (।).
+6. Layout: Use 'box_2d' [ymin, xmin, ymax, xmax] (normalized 0-1000) to represent the physical location of every element.
+
+Return ONLY a JSON array of blocks.`;
 
 export async function performOCR(base64Image: string, mimeType: string): Promise<OCRBlock[]> {
   try {
@@ -20,7 +25,7 @@ export async function performOCR(base64Image: string, mimeType: string): Promise
         {
           parts: [
             { inlineData: { data: base64Image.split(',')[1], mimeType } },
-            { text: "OCR this. Structured JSON only." }
+            { text: "Digitize this document perfectly. Preserve layout, detect all images as placeholders, and reconstruct tables. Structured JSON output only." }
           ]
         }
       ],
@@ -50,7 +55,8 @@ export async function performOCR(base64Image: string, mimeType: string): Promise
                     col: { type: Type.NUMBER }
                   }
                 }
-              }
+              },
+              isBold: { type: Type.BOOLEAN }
             },
             required: ["type", "text", "box_2d"]
           }

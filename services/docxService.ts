@@ -1,22 +1,88 @@
 
-import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } from "docx";
-import { PageResult, OCRBlock } from '../types';
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle, ImageRun } from "docx";
+import { PageResult, OCRBlock, BlockType } from '../types';
+
+/**
+ * Helper to crop a base64 image using canvas.
+ */
+async function cropImage(base64: string, box: [number, number, number, number]): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return reject('No context');
+
+      const [ymin, xmin, ymax, xmax] = box;
+      const width = ((xmax - xmin) / 1000) * img.width;
+      const height = ((ymax - ymin) / 1000) * img.height;
+      const x = (xmin / 1000) * img.width;
+      const y = (ymin / 1000) * img.height;
+
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
+
+      canvas.toBlob((blob) => {
+        if (!blob) return reject('No blob');
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          resolve(new Uint8Array(reader.result as ArrayBuffer));
+        };
+        reader.readAsArrayBuffer(blob);
+      }, 'image/png');
+    };
+    img.onerror = reject;
+    img.src = base64;
+  });
+}
 
 /**
  * Generates a professional DOCX file from processed OCR results.
- * Optimized for layout preservation and multilingual script support.
  */
 export async function generateDocx(pages: PageResult[], exportAll: boolean = false) {
     try {
-        const sections = pages.map(p => {
+        const sections = [];
+
+        for (const p of pages) {
             const blocksToExport = exportAll ? p.blocks : p.blocks.filter(b => b.isSelected);
-            if (blocksToExport.length === 0) return null;
+            if (blocksToExport.length === 0) continue;
+
+            // Sort blocks by their vertical position (ymin) primarily, then horizontal (xmin)
+            const sortedBlocks = [...blocksToExport].sort((a, b) => {
+                const diff = a.box_2d[0] - b.box_2d[0];
+                if (Math.abs(diff) < 20) { // Same line roughly
+                    return a.box_2d[1] - b.box_2d[1];
+                }
+                return diff;
+            });
 
             const children: (Paragraph | Table)[] = [];
 
-            blocksToExport.forEach(block => {
-                // Handle Table Blocks
-                if (block.type === 'table' as any && block.tableData && block.tableData.length > 0) {
+            for (const block of sortedBlocks) {
+                // 1. Handle Images
+                if (block.type === BlockType.IMAGE_PLACEHOLDER) {
+                    try {
+                        const imageBuffer = await cropImage(p.imageUrl, block.box_2d);
+                        children.push(new Paragraph({
+                            children: [
+                                new ImageRun({
+                                    data: imageBuffer,
+                                    transformation: {
+                                        width: (block.box_2d[3] - block.box_2d[1]) * 0.5, // Simple scaling
+                                        height: (block.box_2d[2] - block.box_2d[0]) * 0.5,
+                                    },
+                                }),
+                            ],
+                            alignment: AlignmentType.CENTER,
+                            spacing: { before: 200, after: 200 },
+                        }));
+                    } catch (e) {
+                        console.warn("Failed to crop image block", e);
+                    }
+                }
+                // 2. Handle Tables
+                else if (block.type === BlockType.TABLE && block.tableData && block.tableData.length > 0) {
                     const maxRow = Math.max(...block.tableData.map(d => d.row));
                     const maxCol = Math.max(...block.tableData.map(d => d.col));
                     
@@ -32,7 +98,7 @@ export async function generateDocx(pages: PageResult[], exportAll: boolean = fal
                                             new TextRun({ 
                                                 text: cellData?.text || "", 
                                                 font: "Nirmala UI", 
-                                                size: 22 
+                                                size: 20 
                                             })
                                         ],
                                         alignment: AlignmentType.LEFT,
@@ -56,70 +122,57 @@ export async function generateDocx(pages: PageResult[], exportAll: boolean = fal
                             insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
                         }
                     }));
-                    // Space after table
                     children.push(new Paragraph({ spacing: { before: 200, after: 200 } }));
                 } 
-                // Handle Text Blocks (Paragraphs, Headers, etc.)
+                // 3. Handle Text
                 else {
-                    // Split block text by lines to ensure line breaks are preserved
                     const lines = block.text.split('\n');
                     
                     lines.forEach((line, index) => {
-                        // Preserving spaces and tabs within the line
-                        // docx library handles text runs; we use leading spaces preservation
-                        const formattedLine = line.replace(/\t/g, '    '); // Replace tabs with 4 spaces for better compatibility
+                        // Handle horizontal offset roughly by adding leading spaces if xmin is large
+                        const leadingSpaces = block.box_2d[1] > 400 ? '\t\t' : block.box_2d[1] > 200 ? '\t' : '';
+                        const formattedLine = leadingSpaces + line.replace(/\t/g, '    ');
                         
                         children.push(new Paragraph({
                             children: [
                                 new TextRun({ 
                                     text: formattedLine, 
                                     font: "Nirmala UI", 
-                                    size: block.type === 'header' as any ? 28 : 24,
-                                    bold: block.type === 'header' as any || block.isBold
+                                    size: block.type === BlockType.HEADER ? 28 : 22,
+                                    bold: block.type === BlockType.HEADER || block.isBold
                                 })
                             ],
-                            // Add significant spacing after the last line of a block to separate from the next block
+                            alignment: block.box_2d[1] > 600 ? AlignmentType.RIGHT : block.box_2d[1] > 300 && block.box_2d[3] < 700 ? AlignmentType.CENTER : AlignmentType.LEFT,
                             spacing: { 
-                                after: (index === lines.length - 1) ? 240 : 80,
-                                line: 360 // Line height
+                                after: (index === lines.length - 1) ? 200 : 50,
+                                line: 320 
                             },
                         }));
                     });
                 }
-            });
+            }
 
-            return {
+            sections.push({
                 properties: {
                     page: {
-                        margin: {
-                            top: 1440, // 1 inch
-                            right: 1440,
-                            bottom: 1440,
-                            left: 1440,
-                        },
+                        margin: { top: 1000, right: 1000, bottom: 1000, left: 1000 },
                     },
                 },
                 children: children,
-            };
-        }).filter((s): s is NonNullable<typeof s> => s !== null);
+            });
+        }
 
         if (sections.length === 0) return;
 
         const doc = new Document({
             sections: sections,
-            title: "OmniLex Digitized Document",
-            creator: "OmniLex OCR",
-            description: "Digitized document export powered by OmniLex OCR Engine.",
+            title: "OmniLex Digitation",
+            creator: "OmniLex Engine",
             styles: {
                 default: {
                     document: {
-                        run: {
-                            font: "Nirmala UI",
-                            size: 24,
-                        },
-                        paragraph: {
-                            spacing: { line: 240 },
-                        }
+                        run: { font: "Nirmala UI", size: 22 },
+                        paragraph: { spacing: { line: 240 } }
                     }
                 }
             }
@@ -133,11 +186,9 @@ export async function generateDocx(pages: PageResult[], exportAll: boolean = fal
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        
-        // Cleanup memory
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (error) {
         console.error("OmniLex DOCX Engine Error:", error);
-        alert("Failed to generate DOCX file. Please try again or check your browser console.");
+        alert("Failed to generate DOCX file.");
     }
 }

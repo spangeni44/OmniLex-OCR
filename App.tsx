@@ -23,7 +23,6 @@ const App: React.FC = () => {
   
   const cancelRef = useRef<boolean>(false);
 
-  // Scroll to top on view change
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentView]);
@@ -34,7 +33,7 @@ const App: React.FC = () => {
     setResults(null);
     cancelRef.current = false;
     setCurrentView('processing');
-    setProgress('Initializing OmniLex Intelligence...');
+    setProgress('OmniLex Engine v3.5 Initializing...');
 
     try {
       const allPages: PageResult[] = [];
@@ -45,29 +44,41 @@ const App: React.FC = () => {
         if (file.type === 'application/pdf') {
           const arrayBuffer = await file.arrayBuffer();
           const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-          
+          const pageTasks = [];
+
           for (let i = 1; i <= pdf.numPages; i++) {
-            if (cancelRef.current) break;
-            setProgress(`Scanning PDF Page ${i}/${pdf.numPages}...`);
-            const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: 2.0 });
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d')!;
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            
-            await page.render({ canvasContext: context, viewport }).promise;
-            const imageData = canvas.toDataURL('image/jpeg', 0.85);
-            
-            const blocks = await performOCR(imageData, 'image/jpeg');
-            allPages.push({
-              pageNumber: allPages.length + 1,
-              imageUrl: imageData,
-              blocks,
-              width: viewport.width,
-              height: viewport.height
+            pageTasks.push(async () => {
+              if (cancelRef.current) return null;
+              const page = await pdf.getPage(i);
+              const viewport = page.getViewport({ scale: 2.0 });
+              const canvas = document.createElement('canvas');
+              const context = canvas.getContext('2d')!;
+              canvas.height = viewport.height;
+              canvas.width = viewport.width;
+              
+              await page.render({ canvasContext: context, viewport }).promise;
+              const imageData = canvas.toDataURL('image/jpeg', 0.85);
+              
+              const blocks = await performOCR(imageData, 'image/jpeg');
+              return {
+                pageNumber: i,
+                imageUrl: imageData,
+                blocks,
+                width: viewport.width,
+                height: viewport.height
+              };
             });
           }
+
+          // Process pages in parallel batches to avoid overloading
+          const BATCH_SIZE = 3;
+          for (let i = 0; i < pageTasks.length; i += BATCH_SIZE) {
+            if (cancelRef.current) break;
+            setProgress(`Scanning PDF Pages ${i+1}-${Math.min(i+BATCH_SIZE, pdf.numPages)} of ${pdf.numPages}...`);
+            const batchResults = await Promise.all(pageTasks.slice(i, i + BATCH_SIZE).map(t => t()));
+            allPages.push(...batchResults.filter(r => r !== null) as PageResult[]);
+          }
+          allPages.sort((a, b) => a.pageNumber - b.pageNumber);
         } else if (file.type.startsWith('image/')) {
           setProgress(`Processing ${file.name}...`);
           const reader = new FileReader();
@@ -87,15 +98,15 @@ const App: React.FC = () => {
         }
       }
 
-      if (!cancelRef.current) {
+      if (!cancelRef.current && allPages.length > 0) {
         setResults({ fileName: files[0].name, pages: allPages });
         setCurrentView('workspace');
-      } else {
+      } else if (!cancelRef.current) {
         setCurrentView('home');
       }
     } catch (err: any) {
       console.error(err);
-      setError("Rapid Extraction Failed. Please check network/API key.");
+      setError("Extraction Failed. Please verify your connection or try a smaller file.");
       setCurrentView('home');
     } finally {
       setIsLoading(false);
@@ -160,7 +171,7 @@ const App: React.FC = () => {
     setIsLoading(true);
     const oldView = currentView;
     setCurrentView('processing');
-    setProgress('Generating Professional DOCX...');
+    setProgress('Generating Professional DOCX with Original Graphics...');
     await generateDocx(results.pages, exportMode === 'all');
     setIsLoading(false);
     setProgress('');
@@ -168,8 +179,6 @@ const App: React.FC = () => {
   };
 
   const activePage = results?.pages[activePageIndex];
-
-  // --- Sub-components for views ---
 
   const Header = () => (
     <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-50 shrink-0 shadow-sm">
@@ -300,7 +309,7 @@ const App: React.FC = () => {
         </div>
         <div className="p-6 bg-white rounded-2xl border border-gray-100 shadow-sm space-y-3">
           <p className="text-sm text-gray-500 font-medium leading-relaxed">
-            Our AI is currently performing layout analysis and text reconstruction. This may take a few moments for large PDF files.
+            OmniLex is currently performing layout analysis and graphics reconstruction. This may take a few moments for complex PDF files.
           </p>
           <button 
             onClick={handleCancel} 
@@ -315,7 +324,6 @@ const App: React.FC = () => {
 
   const LandingPage = () => (
     <div className="flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-700">
-      {/* Hero Section */}
       <section className="bg-white py-24 px-6 relative overflow-hidden">
         <div className="max-w-5xl mx-auto text-center relative z-10">
           <div className="inline-flex items-center gap-2 bg-indigo-50 px-4 py-1.5 rounded-full text-indigo-600 text-xs font-black uppercase tracking-widest mb-8">
@@ -338,7 +346,6 @@ const App: React.FC = () => {
         <div className="absolute bottom-0 -right-20 w-96 h-96 bg-blue-100/30 rounded-full blur-3xl"></div>
       </section>
 
-      {/* Features Grid */}
       <section className="py-24 px-6 bg-gray-50">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-16">
@@ -359,8 +366,8 @@ const App: React.FC = () => {
               <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
                 <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
               </div>
-              <h3 className="text-xl font-black text-gray-900 mb-4">Precision Selection</h3>
-              <p className="text-gray-500 leading-relaxed">Drag to select specific areas or click blocks to toggle extraction. You decide exactly what gets digitized.</p>
+              <h3 className="text-xl font-black text-gray-900 mb-4">Original Graphics</h3>
+              <p className="text-gray-500 leading-relaxed">Detects images and illustrations, extracting them directly from your file and placing them in your export.</p>
             </div>
 
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl transition-all group">
@@ -376,144 +383,6 @@ const App: React.FC = () => {
     </div>
   );
 
-  const AboutPage = () => (
-    <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
-      <h1 className="text-5xl font-black text-gray-900 mb-8">About OmniLex</h1>
-      <p className="text-xl text-gray-600 mb-12 leading-relaxed">
-        OmniLex OCR is a specialized tool integrated into the Suresh Pangeni ecosystem. It addresses the gap in accurate Devanagari digitization by combining state-of-the-art AI with custom post-processing algorithms.
-      </p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-12 mb-16">
-        <div>
-          <h3 className="text-2xl font-black mb-4">Our Goal</h3>
-          <p className="text-gray-600 leading-relaxed">
-            To provide precise document conversion for researchers, legal professionals, and students who work with multilingual documents.
-          </p>
-        </div>
-        <div>
-          <h3 className="text-2xl font-black mb-4">Technology Stack</h3>
-          <p className="text-gray-600 leading-relaxed">
-            Built using React, PDF.js, and Google's Gemini Flash, optimized for speed and structural accuracy.
-          </p>
-        </div>
-      </div>
-      <div className="bg-indigo-50 p-10 rounded-3xl border border-indigo-100">
-        <h3 className="text-2xl font-black text-indigo-900 mb-4">Trusted Access</h3>
-        <p className="text-indigo-700 leading-relaxed">
-          OmniLex is used for complex digitization tasks where layout preservation is as critical as text accuracy.
-        </p>
-      </div>
-    </div>
-  );
-
-  const FAQPage = () => (
-    <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
-      <h1 className="text-5xl font-black text-gray-900 mb-12 text-center">Frequently Asked Questions</h1>
-      <div className="space-y-6">
-        {[
-          { q: "Is it free to use?", a: "OmniLex is currently available for public use on sureshpangeni.com.np as a professional tool demonstration." },
-          { q: "How accurate is the Nepali OCR?", a: "Our engine achieves over 99% accuracy for printed Devanagari text, handling complex conjuncts flawlessly." },
-          { q: "Does it support handwritten notes?", a: "Clear handwriting is supported, though results may vary depending on the legibility of the script." },
-          { q: "Are my files secure?", a: "Yes. Files are processed in real-time and deleted immediately after your session ends." }
-        ].map((item, idx) => (
-          <div key={idx} className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-black text-gray-900 mb-3">{item.q}</h3>
-            <p className="text-gray-500 leading-relaxed">{item.a}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  const ContactPage = () => {
-    const [submitted, setSubmitted] = useState(false);
-    return (
-      <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
-        <div className="text-center mb-16">
-          <h1 className="text-5xl font-black text-gray-900 mb-4">Contact Support</h1>
-          <p className="text-xl text-gray-500">Need help? Send us a message or reach out via phone.</p>
-        </div>
-        
-        {submitted ? (
-          <div className="bg-green-50 p-12 rounded-3xl text-center border border-green-100">
-            <div className="w-16 h-16 bg-green-600 text-white rounded-full flex items-center justify-center mx-auto mb-6">
-               <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>
-            </div>
-            <h2 className="text-3xl font-black text-green-900 mb-2">Message Received</h2>
-            <p className="text-green-700 font-bold uppercase tracking-widest text-xs">We will contact you shortly</p>
-            <button onClick={() => setSubmitted(false)} className="mt-8 text-green-600 font-bold underline">Send another message</button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
-            <div className="lg:col-span-2">
-              <form className="space-y-6 bg-white p-10 rounded-3xl shadow-xl border border-gray-100" onSubmit={(e) => { e.preventDefault(); setSubmitted(true); }}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2">Full Name</label>
-                    <input required type="text" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="Enter your name" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2">Email Address</label>
-                    <input required type="email" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="info@example.com" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2">Message</label>
-                  <textarea required className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none h-40" placeholder="Describe your issue or query"></textarea>
-                </div>
-                <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black text-lg shadow-lg hover:bg-indigo-700 transition-all active:scale-[0.98]">SEND ENQUIRY</button>
-              </form>
-            </div>
-            <div className="space-y-8">
-               <div className="bg-indigo-600 p-8 rounded-3xl text-white shadow-xl shadow-indigo-100">
-                  <h3 className="text-lg font-black mb-6 uppercase tracking-widest">Office Info</h3>
-                  <div className="space-y-6">
-                    <div>
-                      <span className="text-xs font-bold text-indigo-200 uppercase block mb-1">Support Email</span>
-                      <p className="font-bold">info@sureshpangeni.com.np</p>
-                    </div>
-                    <div>
-                      <span className="text-xs font-bold text-indigo-200 uppercase block mb-1">Support Phone</span>
-                      <p className="font-bold">+977 9868479999</p>
-                    </div>
-                    <div>
-                      <span className="text-xs font-bold text-indigo-200 uppercase block mb-1">Official Web</span>
-                      <p className="font-bold">sureshpangeni.com.np</p>
-                    </div>
-                  </div>
-               </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const PrivacyPage = () => (
-    <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
-      <h1 className="text-5xl font-black text-gray-900 mb-12">Privacy Policy</h1>
-      <div className="prose prose-indigo max-w-none text-gray-600 space-y-8">
-        <section>
-          <h2 className="text-2xl font-black text-gray-900 mb-4">1. Data Commitment</h2>
-          <p className="leading-relaxed">
-            OmniLex OCR prioritizes user data integrity. We do not store, index, or sell the content of your uploaded documents. 
-          </p>
-        </section>
-        <section>
-          <h2 className="text-2xl font-black text-gray-900 mb-4">2. Processing Flow</h2>
-          <p className="leading-relaxed">
-            All document processing is handled through encrypted sessions. Gemini Pro endpoints used for extraction are configured to discard data immediately after response generation.
-          </p>
-        </section>
-        <section>
-          <h2 className="text-2xl font-black text-gray-900 mb-4">3. Security</h2>
-          <p className="leading-relaxed">
-            Suresh Pangeni's digital infrastructure employs HTTPS-only protocols to ensure your data remains confidential between your device and our processing unit.
-          </p>
-        </section>
-      </div>
-    </div>
-  );
-
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <style>{`
@@ -526,10 +395,54 @@ const App: React.FC = () => {
 
       <main className={`flex-1 overflow-hidden ${currentView === 'workspace' ? 'flex' : 'block'}`}>
         {currentView === 'home' && <LandingPage />}
-        {currentView === 'about' && <AboutPage />}
-        {currentView === 'contact' && <ContactPage />}
-        {currentView === 'faq' && <FAQPage />}
-        {currentView === 'privacy' && <PrivacyPage />}
+        {currentView === 'about' && (
+          <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
+            <h1 className="text-5xl font-black text-gray-900 mb-8">About OmniLex</h1>
+            <p className="text-xl text-gray-600 mb-12 leading-relaxed">
+              OmniLex OCR is a specialized tool integrated into the Suresh Pangeni ecosystem. It addresses the gap in accurate Devanagari digitization by combining state-of-the-art AI with custom post-processing algorithms.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-12 mb-16">
+              <div>
+                <h3 className="text-2xl font-black mb-4">Our Goal</h3>
+                <p className="text-gray-600 leading-relaxed">
+                  To provide precise document conversion for researchers, legal professionals, and students who work with multilingual documents.
+                </p>
+              </div>
+              <div>
+                <h3 className="text-2xl font-black mb-4">Technology Stack</h3>
+                <p className="text-gray-600 leading-relaxed">
+                  Built using React, PDF.js, and Google's Gemini Flash, optimized for speed and structural accuracy.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+        {currentView === 'contact' && <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500 text-center">
+            <h1 className="text-5xl font-black text-gray-900 mb-8">Contact Support</h1>
+            <p className="text-xl text-gray-500 mb-8">Reach out to the Suresh Pangeni team.</p>
+            <div className="bg-indigo-600 p-8 rounded-3xl text-white shadow-xl shadow-indigo-100 inline-block text-left">
+              <p className="font-bold">Email: info@sureshpangeni.com.np</p>
+              <p className="font-bold">Phone: +977 9868479999</p>
+            </div>
+        </div>}
+        {currentView === 'faq' && <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
+            <h1 className="text-5xl font-black text-gray-900 mb-12 text-center">Frequently Asked Questions</h1>
+            <div className="space-y-6">
+              {[
+                { q: "How accurate is the Nepali OCR?", a: "Our engine achieves over 99% accuracy for printed Devanagari text." },
+                { q: "Does it extract images?", a: "Yes, OmniLex now detects and extracts graphics directly from your original documents." }
+              ].map((item, idx) => (
+                <div key={idx} className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
+                  <h3 className="text-lg font-black text-gray-900 mb-3">{item.q}</h3>
+                  <p className="text-gray-500 leading-relaxed">{item.a}</p>
+                </div>
+              ))}
+            </div>
+        </div>}
+        {currentView === 'privacy' && <div className="max-w-4xl mx-auto py-24 px-6 animate-in fade-in duration-500">
+            <h1 className="text-5xl font-black text-gray-900 mb-12">Privacy Policy</h1>
+            <p className="leading-relaxed">OmniLex OCR prioritizes user data integrity. We do not store or sell the content of your uploaded documents.</p>
+        </div>}
         {currentView === 'processing' && <ProcessingScreen />}
         
         {currentView === 'workspace' && results && (
@@ -621,7 +534,19 @@ const App: React.FC = () => {
         )}
       </main>
       
-      {currentView !== 'workspace' && currentView !== 'processing' && <Footer />}
+      {currentView !== 'workspace' && currentView !== 'processing' && <footer className="bg-white border-t border-gray-200 py-12 px-6">
+          <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-12">
+            <div>
+              <h2 className="text-lg font-black tracking-tight text-gray-900 mb-4">OmniLex OCR</h2>
+              <p className="text-sm text-gray-500 leading-relaxed">By Suresh Pangeni</p>
+            </div>
+            <div>
+              <h4 className="font-black text-xs uppercase tracking-widest text-gray-400 mb-6">Contact</h4>
+              <p className="text-sm text-gray-600">info@sureshpangeni.com.np</p>
+              <p className="text-sm text-gray-600">+977 9868479999</p>
+            </div>
+          </div>
+        </footer>}
     </div>
   );
 };
