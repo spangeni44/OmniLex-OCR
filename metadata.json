@@ -1,0 +1,7 @@
+{
+  "name": "OmniLex OCR: Global Document Intelligence",
+  "description": "High-precision OCR and layout reconstruction for global languages, specializing in Devanagari (Nepali/Hindi) and English. Features Google Lens-style selection and multi-format digitization.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
